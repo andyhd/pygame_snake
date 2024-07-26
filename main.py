@@ -9,7 +9,7 @@ import pygame.locals as pg
 from pygskin.assets import Assets
 from pygskin.direction import Direction
 from pygskin.game import GameLoop
-from pygskin.lazy_image import LazyImage
+from pygskin.lazy import LazyObject
 from pygskin.pubsub import message
 from pygskin.spritesheet import Spritesheet
 from pygskin.text import Text
@@ -18,9 +18,10 @@ from pygskin.window import Window
 assets = Assets()
 
 SPRITESHEET = Spritesheet(
-    lambda: assets.snake,
-    (4, 4),
-    {
+    LazyObject(lambda: assets.snake),
+    rows=4,
+    columns=4,
+    name_map={
         "APPLE": (2, 3),
         "HEAD UP": (0, 0),
         "HEAD DOWN": (1, 1),
@@ -61,7 +62,7 @@ class Food:
     def __init__(self) -> None:
         self.pos = pygame.Vector2()
 
-    @LazyImage
+    @property
     def image(self) -> pygame.Surface:
         return SPRITESHEET["APPLE"]
 
@@ -97,7 +98,7 @@ class Snake:
 
     @property
     def occupied(self) -> set[tuple[float, float]]:
-        return set(tuple(segment.pos) for segment in self.segments)
+        return set((segment.pos.x, segment.pos.y) for segment in self.segments)
 
     def grow(self) -> None:
         self.head.direction = self.next_direction
@@ -138,7 +139,7 @@ class World:
         return self.rect.collidepoint(pos)
 
     def random_pos(self, occupied: set[tuple[float, float]]) -> pygame.Vector2:
-        return random.choice(list(self._cells - occupied))
+        return pygame.Vector2(random.choice(list(self._cells - occupied)))
 
 
 class Score:
@@ -146,7 +147,7 @@ class Score:
         self.value = 0
         self.rect = self.image.get_rect()
 
-    @LazyImage
+    @property
     def image(self) -> pygame.Surface:
         return Text(
             f"Score: {self.value}",
@@ -170,7 +171,9 @@ class Game(GameLoop):
     def setup(self) -> None:
         self.world = world = World()
 
-        self.window = window = Window(translate_to_screen(world.size), "Snake")
+        Window.size = translate_to_screen(pygame.Vector2(world.size))
+        Window.title = "Snake"
+        _ = Window.surface
 
         self.food = Food()
         self.snake = snake = Snake()
@@ -179,7 +182,7 @@ class Game(GameLoop):
         self.game_over = True
 
         self.score = score = Score()
-        score.rect.bottom = window.rect.bottom
+        score.rect.bottom = Window.rect.bottom
 
         snake.eat.subscribe(score.increment)
         snake.eat.subscribe(assets.eat_sound.play)
@@ -193,14 +196,14 @@ class Game(GameLoop):
             background=(0, 0, 255, 128),
             padding=[20],
         )
-        self.pause_label.rect.center = window.rect.center
+        self.pause_label.rect.center = Window.rect.center
 
         self.game_over_label = Text(
             "GAME OVER",
             background=(0, 0, 255, 128),
             padding=[20],
         )
-        self.game_over_label.rect.center = window.rect.center
+        self.game_over_label.rect.center = Window.rect.center
 
         pygame.time.set_timer(UPDATE, 140)
 
@@ -249,18 +252,17 @@ class Game(GameLoop):
             snake.shrink()
 
     def draw(self) -> None:
-        self.window.surface.fill((0, 40, 0))
-        self.food.draw(self.window.surface)
-        self.snake.draw(self.window.surface)
-        self.window.surface.blit(self.score.image, self.score.rect)
+        screen = Window.surface
+        screen.fill((0, 40, 0))
+        self.food.draw(screen)
+        self.snake.draw(screen)
+        screen.blit(self.score.image, self.score.rect)
 
         if self.game_over:
-            self.window.surface.blit(
-                self.game_over_label.image, self.game_over_label.rect
-            )
+            screen.blit(self.game_over_label.image, self.game_over_label.rect)
 
         elif self.paused:
-            self.window.surface.blit(self.pause_label.image, self.pause_label.rect)
+            screen.blit(self.pause_label.image, self.pause_label.rect)
 
         pygame.display.flip()
 
