@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from typing import Any
+from typing import NamedTuple
 
 import pygame
 import pygame.locals as pg
+from pygame import Vector2
+from pygame.event import Event
 
+from pygskin import imgui
+from pygskin.imgui import label
 from pygskin.assets import Assets
 from pygskin.direction import Direction
-from pygskin.game import GameLoop
+from pygskin.game import run_game
 from pygskin.lazy import LazyObject
-from pygskin.pubsub import message
 from pygskin.spritesheet import Spritesheet
-from pygskin.text import Text
-from pygskin.window import Window
 
 assets = Assets()
 
@@ -53,59 +55,46 @@ DIRECTION_KEYS = {
     pygame.K_RIGHT: Direction.RIGHT,
 }
 
+CELL_SIZE = 32
 
-def translate_to_screen(pos: pygame.Vector2) -> pygame.Vector2:
-    return pygame.Vector2(pos) * 32
-
-
-class Food:
-    def __init__(self) -> None:
-        self.pos = pygame.Vector2()
-
-    @property
-    def image(self) -> pygame.Surface:
-        return SPRITESHEET["APPLE"]
-
-    def draw(self, surface: pygame.Surface) -> None:
-        surface.blit(self.image, translate_to_screen(self.pos))
+WIDTH, HEIGHT = 25, 18
 
 
-@dataclass
-class Segment:
-    pos: pygame.Vector2
-    direction: Direction
-
-    def project(self) -> Segment:
-        return Segment(self.pos + self.direction.vector, self.direction)
+class Segment(NamedTuple):
+    pos: Vector2
+    direction: Direction = Direction.RIGHT
 
 
 class Snake:
-    def __init__(self, pos: pygame.Vector2 | None = None) -> None:
-        self.die = message()
-        self.eat = message()
-        self.reset(pos)
-
-    def reset(self, pos: pygame.Vector2 | None = None) -> None:
-        pos = pos or pygame.Vector2()
-        self.next_direction = direction = Direction.RIGHT
-        self.segments = [
-            Segment(pos - direction.vector * i, direction) for i in range(3)
-        ]
+    def __init__(self) -> None:
+        self.next_direction = Direction.RIGHT
+        self.segments: list[Segment] = []
 
     @property
     def head(self) -> Segment:
         return self.segments[0]
 
-    @property
-    def occupied(self) -> set[tuple[float, float]]:
-        return set((segment.pos.x, segment.pos.y) for segment in self.segments)
-
     def grow(self) -> None:
-        self.head.direction = self.next_direction
-        self.segments.insert(0, self.head.project())
+        if self.segments:
+            d = self.next_direction
+            self.segments[0] = Segment(self.head.pos, d)
+            new_head = Segment(self.head.pos + d.vector, d)
+        else:
+            new_head = Segment(Vector2(-2, 0))
+        self.segments.insert(0, new_head)
 
     def shrink(self) -> None:
         self.segments.pop()
+
+    def respawn(self) -> None:
+        self.next_direction = Direction.RIGHT
+        self.segments.clear()
+        for i in range(3):
+            self.grow()
+
+    @property
+    def occupied(self) -> list[Vector2]:
+        return [segment.pos for segment in self.segments]
 
     def turn(self, direction: Direction) -> None:
         if direction.axis != self.head.direction.axis:
@@ -119,153 +108,107 @@ class Snake:
         for segment in reversed(self.segments[1:]):
             surface.blit(
                 SPRITESHEET[f"{previous} {segment.direction.name}"],
-                translate_to_screen(segment.pos),
+                segment.pos * CELL_SIZE,
             )
             previous = segment.direction.name
         surface.blit(
             SPRITESHEET[f"HEAD {previous}"],
-            translate_to_screen(self.head.pos),
+            self.head.pos * CELL_SIZE,
         )
 
-
-class World:
-    def __init__(self) -> None:
-        self.size = 25, 18
-        self.rect = pygame.Rect((0, 0), self.size)
-        width, height = map(range, self.size)
-        self._cells = {(float(x), float(y)) for y in height for x in width}
-
-    def __contains__(self, pos: pygame.Vector2) -> bool:
-        return self.rect.collidepoint(pos)
-
-    def random_pos(self, occupied: set[tuple[float, float]]) -> pygame.Vector2:
-        return pygame.Vector2(random.choice(list(self._cells - occupied)))
-
-
-class Score:
-    def __init__(self) -> None:
-        self.value = 0
-        self.rect = self.image.get_rect()
-
-    @property
-    def image(self) -> pygame.Surface:
-        return Text(
-            f"Score: {self.value}",
-            background=(0, 0, 0, 127),
-            padding=[20],
-        ).image
-
-    def set(self, value: int) -> None:
-        self.value = value
-        if hasattr(self, "_image"):
-            del self._image
-
-    def increment(self) -> None:
-        self.set(self.value + 1)
 
 
 UPDATE = pygame.event.custom_type()
 
 
-class Game(GameLoop):
-    def setup(self) -> None:
-        self.world = world = World()
+def get_update_world_fn(state: dict):
+    snake = Snake()
+    food_pos = Vector2()
+    all_cells = set((x, y) for y in range(HEIGHT) for x in range(WIDTH))
 
-        Window.size = translate_to_screen(pygame.Vector2(world.size))
-        Window.title = "Snake"
-        _ = Window.surface
+    def random_pos(occupied: list[Vector2]) -> Vector2:
+        occupied_set = set((int(x), int(y)) for x, y in occupied)
+        return random.choice(list(all_cells - occupied_set))
 
-        self.food = Food()
-        self.snake = snake = Snake()
+    def reset_game():
+        snake.respawn()
+        food_pos.update(Vector2(random_pos(occupied=snake.occupied)))
+        state["paused"] = True
+        state["game_over"] = False
+        state["score"] = 0
 
-        self.paused = True
-        self.game_over = True
+    reset_game()
 
-        self.score = score = Score()
-        score.rect.bottom = Window.rect.bottom
-
-        snake.eat.subscribe(score.increment)
-        snake.eat.subscribe(assets.eat_sound.play)
-        snake.die.subscribe(assets.die_sound.play)
-        snake.die.subscribe(lambda: setattr(self, "game_over", True))
-
-        self.reset()
-
-        self.pause_label = Text(
-            ("PAUSED\n\nP - Pause / Unpause"),
-            background=(0, 0, 255, 128),
-            padding=[20],
-        )
-        self.pause_label.rect.center = Window.rect.center
-
-        self.game_over_label = Text(
-            "GAME OVER",
-            background=(0, 0, 255, 128),
-            padding=[20],
-        )
-        self.game_over_label.rect.center = Window.rect.center
-
-        pygame.time.set_timer(UPDATE, 140)
-
-    def reset(self) -> None:
-        self.score.set(0)
-        self.snake.reset()
-        self.food.pos = self.world.random_pos(occupied=self.snake.occupied)
-        self.paused = True
-        self.game_over = False
-
-    def update(self, events: list[pygame.event.Event]) -> None:
+    def update_world(surface: pygame.Surface, events: list[Event]) -> None:
         for event in events:
             if event.type == pg.KEYDOWN:
-                if self.game_over:
-                    return self.reset()
+                if state["game_over"]:
+                    reset_game()
+                    state["paused"] = False
+                    pygame.time.set_timer(UPDATE, 140)
+                    break
 
                 if event.key == pg.K_p:
-                    self.paused = not self.paused
+                    state["paused"] = not state["paused"]
+                    if not state["paused"]:
+                        pygame.time.set_timer(UPDATE, 140)
+                    else:
+                        pygame.time.set_timer(UPDATE, 0)
 
-                if not self.paused and (direction := DIRECTION_KEYS.get(event.key)):
-                    self.snake.turn(direction)
-
-            if event.type == pg.QUIT:
-                self.running = False
-                break
+                if not state["paused"] and (direction := DIRECTION_KEYS.get(event.key)):
+                    snake.turn(direction)
 
             if event.type == UPDATE:
-                self.move_snake()
+                snake.grow()
 
-    def move_snake(self) -> None:
-        if self.paused or self.game_over:
-            return
+                pos = snake.head.pos
+                hit_self = snake.hit_self()
+                out_of_bounds = not (0 <= pos.x < width and 0 <= pos.y < height)
+                if hit_self or out_of_bounds:
+                    assets.die_sound.play()
+                    state["game_over"] = True
+                    pygame.time.set_timer(UPDATE, 0)
 
-        snake, world, food = self.snake, self.world, self.food
+                elif pos == food_pos:
+                    state["score"] += 1
+                    assets.eat_sound.play()
+                    food_pos.update(random_pos(occupied=snake.occupied + [food_pos]))
 
-        snake.grow()
+                else:
+                    snake.shrink()
 
-        if snake.hit_self() or snake.head.pos not in world:
-            snake.die()
+        surface.blit(SPRITESHEET["APPLE"], food_pos * CELL_SIZE)
+        snake.draw(surface)
 
-        elif snake.head.pos == food.pos:
-            snake.eat()
-            food.pos = world.random_pos(occupied=snake.occupied | {tuple(food.pos)})
+    return update_world
 
-        else:
-            snake.shrink()
 
-    def draw(self) -> None:
-        screen = Window.surface
-        screen.fill((0, 40, 0))
-        self.food.draw(screen)
-        self.snake.draw(screen)
-        screen.blit(self.score.image, self.score.rect)
+def play_game(width: int, height: int):
+    state: dict[str, Any] = {}
+    update_world = get_update_world_fn(state)
+    gui = imgui.IMGUI()
 
-        if self.game_over:
-            screen.blit(self.game_over_label.image, self.game_over_label.rect)
+    def _play_game(window: pygame.Window, events: list[Event], _) -> None:
+        surface = window.get_surface()
+        surface.fill((0, 40, 0))
 
-        elif self.paused:
-            screen.blit(self.pause_label.image, self.pause_label.rect)
+        update_world(surface, events)
 
-        pygame.display.flip()
+        rect = surface.get_rect()
+        with imgui.render(gui, surface) as render:
+            if state["paused"]:
+                render(label("PAUSED\n\nP - Pause / Unpause"), center=rect.center)
+            elif state["game_over"]:
+                render(label("GAME OVER"), center=rect.center)
+            else:
+                render(label(f"Score: {state['score']}"), bottomleft=rect.bottomleft)
+
+    return _play_game
 
 
 if __name__ == "__main__":
-    Game().start()
+    width, height = 25, 18
+    run_game(
+        pygame.Window("Snake", (width * CELL_SIZE, height * CELL_SIZE)),
+        play_game(width, height),
+    )
