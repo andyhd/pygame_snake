@@ -188,8 +188,7 @@ def play_game(width: int, height: int):
     update_world = get_update_world_fn(state)
     gui = imgui.IMGUI()
 
-    def _play_game(window: pygame.Window, events: list[Event], _) -> None:
-        surface = window.get_surface()
+    def _play_game(surface: pygame.Surface, events: list[Event], _) -> None:
         surface.fill((0, 40, 0))
 
         update_world(surface, events)
