@@ -1,3 +1,2 @@
 pygame-ce
-../pygskin
-ruamel.yaml
+pygskin

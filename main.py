@@ -200,7 +200,7 @@ def play_game(width: int, height: int):
             elif state["game_over"]:
                 render(label("GAME OVER"), center=rect.center)
             else:
-                render(label(f"Score: {state['score']}"), bottomleft=rect.bottomleft)
+                render(label(f"Score: {state['score']}"), bottom=rect.bottom - 10, left=rect.left + 10, align="left")
 
     return _play_game
 
